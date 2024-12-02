@@ -5,12 +5,10 @@ const path = require('path');
 const app = express();
 const port = 3000;
 
-// Serve static files from the "public" folder
-app.use(express.static(path.join(__dirname, 'client')));
+app.use(express.static(path.join(__dirname, '../client/index.html')));
 
-// Database connection setup
 const db = mysql.createConnection({
-  host: process.env.DB_HOST,      // Provided via docker-compose.yml
+  host: process.env.DB_HOST,      
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
