@@ -9,7 +9,7 @@ app.use(cors());
 
 let db;
 let dbInit = false;
-let players = []; // Store player locations
+let circles = []; // Store players
 
 // Serve static files
 app.use(express.static(path.join(__dirname, '../client')));
@@ -23,6 +23,7 @@ function initializeDatabase(callback) {
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
   });
 
   db.connect((err) => {
@@ -46,15 +47,29 @@ function initializeDatabase(callback) {
 }
 
 function createTables(callback) {
-  db.query(`CREATE TABLE IF NOT EXISTS circles`, (err) => {
+  db.connect((err) => {
     if (err) {
-      console.error('Error creating circles table:', err);
-      db.end();
-      return callback(false);
+      console.error('Database connection failed during initialization:', err);
+      return callback(false); // Initialization failed
     }
 
-    console.log(`Table circles created successfully.`);
-    return callback(true);
+    // Create the circles table if it doesn't exist
+    db.query(`CREATE TABLE IF NOT EXISTS circles
+      ( id int unsigned NOT NULL auto_increment, 
+      username varchar(100) NOT NULL,
+      x int unsigned NOT NULL,
+      y int unsigned NOT NULL,
+      PRIMARY KEY (id)
+      )`, (err) => {
+      if (err) {
+        console.error('Error creating circles table:', err);
+        db.end();
+        return callback(false);
+      }
+
+      console.log(`Table circles created successfully.`);
+      return callback(true);
+    });
   });
 }
 
@@ -66,6 +81,9 @@ app.post('/initDB', (req, res) => {
           if (tstatus) {
             res.json({ status: true, message: 'Database initialized successfully.' });
             dbInit = true;
+          }
+          else {
+            res.json({ status: false, message: 'Failed to initialize the circles table.' });
           }
         });
       } else {
@@ -84,4 +102,16 @@ app.listen(port, () => {
 // Serve app.html on the root route
 app.get('/', (req, res) => {
   res.sendFile('app.html', { root: __dirname });
+});
+
+// Close DB connection when docker container sends shutdown signal
+process.on('SIGTERM', () => {
+  console.log('Received SIGTERM, shutting down...');
+  if (db) {
+    db.end(() => {
+      console.log('Database connection closed.');
+    });
+  } else {
+    console.log('Database connection was not initialized.');
+  }
 });

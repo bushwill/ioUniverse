@@ -1,4 +1,4 @@
-let players = []; // To store retrieved player locations
+let circles = [];
 
 function setup() {
     rectMode(CENTER);
