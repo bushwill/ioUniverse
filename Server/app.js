@@ -4,12 +4,10 @@ const port = 3000;
 const mysql = require('mysql2');
 const path = require('path');
 const cors = require('cors');
-const { create } = require('domain');
 app.use(cors());
 
 let db;
 let dbInit = false;
-let circles = []; // Store players
 
 // Serve static files
 app.use(express.static(path.join(__dirname, '../client')));
@@ -53,45 +51,76 @@ function createTables(callback) {
       return callback(false); // Initialization failed
     }
 
-    // Create the circles table if it doesn't exist
-    db.query(`CREATE TABLE IF NOT EXISTS circles
-      ( id int unsigned NOT NULL auto_increment, 
-      username varchar(100) NOT NULL,
+    // Create the players table if it doesn't exist
+    db.query(`CREATE TABLE IF NOT EXISTS players
+      ( username varchar(100) NOT NULL,
       x int unsigned NOT NULL,
       y int unsigned NOT NULL,
-      PRIMARY KEY (id)
+      r int unsigned NOT NULL,
+      g int unsigned NOT NULL,
+      b int unsigned NOT NULL,
+      PRIMARY KEY (username)
       )`, (err) => {
       if (err) {
-        console.error('Error creating circles table:', err);
-        db.end();
+        console.error('Error creating players table:', err);
         return callback(false);
       }
 
-      console.log(`Table circles created successfully.`);
+      console.log(`Table players created successfully.`);
       return callback(true);
     });
   });
 }
 
 app.post('/initDB', (req, res) => {
-  if (!dbInit) {
-    initializeDatabase((dbstatus) => {
-      if (dbstatus) {
-        createTables((tstatus) => {
-          if (tstatus) {
-            res.json({ status: true, message: 'Database initialized successfully.' });
-            dbInit = true;
-          }
-          else {
-            res.json({ status: false, message: 'Failed to initialize the circles table.' });
-          }
-        });
-      } else {
-        res.json({ status: false, message: 'Failed to initialize the database.' });
-        dbInit = false;
-      }
-    });
-  } else res.json({ status: true, message: 'Database already initialized' });
+  initializeDatabase((dbstatus) => {
+    if (dbstatus) {
+      createTables((tstatus) => {
+        if (tstatus) {
+          res.json({ status: true, message: 'Database initialized successfully.' });
+          dbInit = true;
+        }
+        else {
+          res.json({ status: false, message: 'Failed to initialize the players table.' });
+        }
+      });
+    } else {
+      res.json({ status: false, message: 'Failed to initialize the database.' });
+      dbInit = false;
+    }
+  });
+});
+
+app.post('/sendPlayerData', (req, res) => {
+  const { username, x, y, r, g, b } = req.body;
+
+  const columns = ['x', 'y', 'r', 'g', 'b'];
+  const updateClause = columns.map(col => `${col} = VALUES(${col})`).join(', ');
+
+  const insertQuery = `
+    INSERT INTO players (username, x, y, r, g, b)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE ${updateClause};`;
+
+  db.query(insertQuery, [username, x, y, r, g, b], function (error, result) {
+    if (error) {
+      console.error("~~~~~~~~~~Error updating player information:\n", error);
+      res.status(500).json({ success: false, message: "Error updating player information." });
+    } else {
+      res.status(200).json({ success: true, message: "Successfully updated player information!" });
+    }
+  });
+});
+
+app.get('/getPlayerData', (req, res) => {
+  const query = 'SELECT * FROM players';
+  db.query(query, (error, results) => {
+    if (error) {
+      res.status(500).json({ error: 'Error fetching players' });
+    } else {
+      res.status(200).json(results);
+    }
+  });
 });
 
 // Listen on specified port
