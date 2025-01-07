@@ -1,139 +1,142 @@
+const WebSocket = require('ws');
 const express = require('express');
 const app = express();
-const port = 3000;
-const mysql = require('mysql2');
 const path = require('path');
-const cors = require('cors');
-app.use(cors());
+const port = 3000;
 
-let db;
-let dbInit = false;
+const INACTIVITY_THRESHOLD = 10 * 60 * 1000;
 
-// Serve static files
-app.use(express.static(path.join(__dirname, '../client')));
+app.use(express.static(path.join(__dirname, '../client'), {
+  setHeaders: (res, filePath) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+  }
+}));
 
-// Middleware to parse JSON requests
-app.use(express.json());
+const server = app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
+});
 
-// Function to initialize the database
-function initializeDatabase(callback) {
-  db = mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-  });
+const wss = new WebSocket.Server({ server });
 
-  db.connect((err) => {
-    if (err) {
-      console.error('Database connection failed during initialization:', err);
-      return callback(false); // Initialization failed
-    }
+let players = [];
+const playerSockets = new Map(); // Maps usernames to WebSocket instances
+let currentUsername;
 
-    // Create the database if it doesn't exist
-    db.query(`CREATE DATABASE IF NOT EXISTS ${process.env.DB_NAME}`, (err) => {
-      if (err) {
-        console.error('Error creating database:', err);
-        db.end();
-        return callback(false);
-      }
+class Player {
+  constructor(username, r, g, b, x, y) {
+    this.username = username;
+    this.x = x;
+    this.y = y;
+    this.vx = 0;
+    this.vy = 0;
+    this.r = r;
+    this.g = g;
+    this.b = b;
+    this.messages = [];
+    this.lastActivity = millis();
+  }
+}
 
-      console.log(`Database ${process.env.DB_NAME} initialized successfully.`);
-      return callback(true);
-    });
+const startMillis = Date.now();
+function millis() {
+  return Date.now() - startMillis;
+}
+
+function updatePlayerPositions() {
+  const deltaTime = 0.01;
+  players.forEach(player => {
+    player.x += player.vx * deltaTime;
+    player.y += player.vy * deltaTime;
+
+    player.vx = player.vx * (1 - deltaTime);
+    player.vy = player.vy * (1 - deltaTime)
   });
 }
 
-function createTables(callback) {
-  db.connect((err) => {
-    if (err) {
-      console.error('Database connection failed during initialization:', err);
-      return callback(false); // Initialization failed
-    }
+setInterval(updatePlayerPositions, 10);
 
-    // Create the players table if it doesn't exist
-    db.query(`CREATE TABLE IF NOT EXISTS players
-      ( username varchar(100) NOT NULL,
-      x int unsigned NOT NULL,
-      y int unsigned NOT NULL,
-      r int unsigned NOT NULL,
-      g int unsigned NOT NULL,
-      b int unsigned NOT NULL,
-      PRIMARY KEY (username)
-      )`, (err) => {
-      if (err) {
-        console.error('Error creating players table:', err);
-        return callback(false);
-      }
+wss.on('connection', (ws) => {
+  ws.on('message', (data) => {
+    const message = JSON.parse(data);
 
-      console.log(`Table players created successfully.`);
-      return callback(true);
-    });
-  });
-}
-
-app.post('/initDB', (req, res) => {
-  initializeDatabase((dbstatus) => {
-    if (dbstatus) {
-      createTables((tstatus) => {
-        if (tstatus) {
-          res.json({ status: true, message: 'Database initialized successfully.' });
-          dbInit = true;
-        }
-        else {
-          res.json({ status: false, message: 'Failed to initialize the players table.' });
+    if (message.type === 'login') {
+      const { username, r, g, b, x, y } = message;
+      let found = false;
+      players.forEach((player) => {
+        if (player.username === username) {
+          found = true;
         }
       });
-    } else {
-      res.json({ status: false, message: 'Failed to initialize the database.' });
-      dbInit = false;
+      if (!found) {
+        players.push(new Player(username, r, g, b, x, y));
+        playerSockets.set(username, ws);
+        console.log(`Player logged in: ${username}`);
+        currentUsername = username;
+        ws.send(JSON.stringify({ type: 'login_success', username }));
+      } else {
+        ws.send(JSON.stringify({ type: 'login_failed', message: `Username "${username}" is already in use.` }))
+      }
+
+    } else if (message.type === 'update') {
+      const { username, keys, chat_message } = message;
+      const player = players.find((p) => p.username === username);
+      if (player) {
+        let activity = false;
+        if (keys.w) {player.vy -= 5; activity = true}
+        if (keys.s) {player.vy += 5; activity = true}
+        if (keys.a) {player.vx -= 5; activity = true}
+        if (keys.d) {player.vx += 5; activity = true}
+        if (chat_message) {
+          activity = true
+          player.messages.push([millis(), chat_message]);
+        }
+        if (activity) player.lastActivity = millis();
+      }
+
+    } else if (message.type === 'get_data') {
+      players.forEach((player) => {
+        player.messages = player.messages.filter(
+          (msg) => millis() - msg[0] < 8000
+        );
+      });
+      ws.send(JSON.stringify({ type: 'player_data', players }));
+    }
+  });
+
+  ws.on('close', () => {
+    if (currentUsername) {
+      players = players.filter((player) => player.username !== currentUsername);
+      console.log(`Player disconnected: ${currentUsername}`);
     }
   });
 });
 
-app.post('/sendPlayerData', (req, res) => {
-  const { username, x, y, r, g, b } = req.body;
+setInterval(kickIdlePlayers, 60000);
 
-  const columns = ['x', 'y', 'r', 'g', 'b'];
-  const updateClause = columns.map(col => `${col} = VALUES(${col})`).join(', ');
+function kickIdlePlayers() {
 
-  const insertQuery = `
-    INSERT INTO players (username, x, y, r, g, b)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE ${updateClause};`;
+  players = players.filter((player) => {
+    const socket = playerSockets.get(player.username);
 
-  db.query(insertQuery, [username, x, y, r, g, b], function (error, result) {
-    if (error) {
-      console.error("~~~~~~~~~~Error updating player information:\n", error);
-      res.status(500).json({ success: false, message: "Error updating player information." });
-    } else {
-      res.status(200).json({ success: true, message: "Successfully updated player information!" });
+    if (millis() - player.lastActivity > INACTIVITY_THRESHOLD) {
+      console.log(`Kicking inactive player: ${player.username}`);
+      if (socket) {
+        socket.close(4000, "You have been idle for too long.");
+        playerSockets.delete(player.username);
+      }
+      return false;
     }
+
+    return true;
   });
-});
+}
 
-app.get('/getPlayerData', (req, res) => {
-  const query = 'SELECT * FROM players';
-  db.query(query, (error, results) => {
-    if (error) {
-      res.status(500).json({ error: 'Error fetching players' });
-    } else {
-      res.status(200).json(results);
-    }
-  });
-});
-
-// Listen on specified port
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
-});
-
-// Serve app.html on the root route
 app.get('/', (req, res) => {
   res.sendFile('app.html', { root: __dirname });
 });
 
-// Close DB connection when docker container sends shutdown signal
 process.on('SIGTERM', () => {
   console.log('Received SIGTERM, shutting down...');
   if (db) {

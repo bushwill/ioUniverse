@@ -16,26 +16,3 @@ services:
       context: ./server  
     ports:
       - "3000:3000" 
-    depends_on:
-      - db
-    environment:
-      DB_HOST: db
-      DB_USER: user
-      DB_PASSWORD: guest
-      DB_NAME: p5js_database
-
-  db:
-    image: mysql:8.0     
-    container_name: mysql_db
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: p5js_database
-      MYSQL_USER: user
-      MYSQL_PASSWORD: guest
-    ports:
-      - "3306:3306"      
-    volumes:
-      - db_data:/var/lib/mysql
-
-volumes:
-  db_data:
